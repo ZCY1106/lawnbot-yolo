@@ -1,0 +1,32 @@
+path: /sda/zhangchuyi/COCO/coco_lawn
+train: images/train2017
+val: images/val2017
+names:
+- person
+- bicycle
+- car
+- motorcycle
+- fire hydrant
+- bench
+- bird
+- cat
+- dog
+- horse
+- sheep
+- cow
+- backpack
+- umbrella
+- handbag
+- suitcase
+- frisbee
+- sports ball
+- baseball bat
+- baseball glove
+- skateboard
+- surfboard
+- tennis racket
+- bottle
+- chair
+- fence
+- shoe
+- charging station

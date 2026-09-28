@@ -6,10 +6,11 @@ Block modules
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 from .conv import Conv
 
-__all__ = ['DFL', 'SPPF', 'C2f', 'Bottleneck']
+__all__ = ['DFL', 'SPPF', 'C2f', 'Bottleneck', 'ScaleAwareProgressivePConv', 'ProgressiveFasterBlock', 'C2f_ScaleAwarePConv', 'BPUScaleBlock', 'C2f_BPUScaleBlock']
 
 
 class DFL(nn.Module):
@@ -113,3 +114,89 @@ class Bottleneck(nn.Module):
         return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
 
 
+
+
+
+
+class BPUScaleBlock(nn.Module):
+    """BPU-oriented pointwise-depthwise-pointwise compression bottleneck."""
+    def __init__(self, c1, c2, alpha=0.25, shortcut=True, align=8):
+        super().__init__()
+        if not 0 < alpha <= 1:
+            raise ValueError("alpha must be in (0, 1]")
+        if int(align) < 1:
+            raise ValueError("align must be positive")
+        hidden = max(int(align), math.ceil(c2 * alpha / int(align)) * int(align))
+        self.c1, self.c2, self.alpha, self.align, self.hidden = c1, c2, alpha, int(align), hidden
+        self.cv1 = Conv(c1, hidden, 1, 1)
+        self.dw = Conv(hidden, hidden, 3, 1, g=hidden)
+        self.cv2 = Conv(hidden, c2, 1, 1, act=False)
+        self.use_residual = bool(shortcut and c1 == c2)
+
+    def forward(self, x):
+        y = self.cv2(self.dw(self.cv1(x)))
+        return x + y if self.use_residual else y
+
+
+class C2f_BPUScaleBlock(C2f):
+    """C2f whose internal bottlenecks use BPUScaleBlock."""
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5, alpha=0.25, align=8):
+        if g != 1:
+            raise ValueError('g must be 1 for this experiment')
+        super().__init__(c1, c2, n, shortcut, g, e)
+        self.alpha, self.align = alpha, int(align)
+        self.m = nn.ModuleList(BPUScaleBlock(self.c, self.c, alpha, shortcut, align) for _ in range(n))
+
+    def forward(self, x):
+        return self.forward_split(x)
+
+class ScaleAwareProgressivePConv(nn.Module):
+    def __init__(self, dim, scale_type='medium'):
+        super().__init__()
+        if scale_type not in ('light', 'medium', 'heavy'):
+            raise ValueError(f'Invalid scale_type: {scale_type}')
+        self.scale_type = scale_type
+        self.dim_conv3 = dim // {'light': 8, 'medium': 4, 'heavy': 2}[scale_type]
+        self.dim_untouched = dim - self.dim_conv3
+        if self.dim_conv3 < 1:
+            raise ValueError('partial channels must be >= 1')
+        self.partial_conv3 = nn.Conv2d(self.dim_conv3, self.dim_conv3,
+                                      3, 1, 1, groups=1, bias=False)
+        self.bn = nn.BatchNorm2d(dim)
+
+    def forward(self, x):
+        a, b = x.split((self.dim_conv3, self.dim_untouched), dim=1)
+        return self.bn(torch.cat((self.partial_conv3(a), b), dim=1))
+
+
+class ProgressiveFasterBlock(nn.Module):
+    def __init__(self, dim, scale_type='medium', shortcut=True):
+        super().__init__()
+        self.spatial_mixing = ScaleAwareProgressivePConv(dim, scale_type)
+        self.scale_type = scale_type
+        self.add = shortcut
+        if scale_type == 'medium':
+            self.mlp = nn.Sequential(Conv(dim, dim, 1, g=dim), Conv(dim, dim, 1))
+        else:
+            hidden = int(dim * (0.5 if scale_type == 'light' else 1.5))
+            self.mlp = nn.Sequential(Conv(dim, hidden, 1),
+                                     nn.Conv2d(hidden, dim, 1, bias=False))
+
+    def forward(self, x):
+        y = self.mlp(self.spatial_mixing(x))
+        return x + y if self.add else y
+
+
+class C2f_ScaleAwarePConv(C2f):
+    # YAML args after c2: shortcut, g, e, scale_type
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5,
+                 scale_type='medium'):
+        if g != 1:
+            raise ValueError('g must be 1 for this experiment')
+        super().__init__(c1, c2, n, shortcut, g, e)
+        self.scale_type = scale_type
+        self.m = nn.ModuleList(ProgressiveFasterBlock(self.c, scale_type, shortcut)
+                               for _ in range(n))
+
+    def forward(self, x):
+        return self.forward_split(x)

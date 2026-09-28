@@ -158,3 +158,6 @@ weights/
 # Keep detection dataset configuration files (not dataset images).
 !ultralytics/datasets/
 !ultralytics/datasets/*.yaml
+
+# Reproducible SAP experiment outputs
+/artifacts/

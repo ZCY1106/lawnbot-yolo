@@ -22,6 +22,8 @@ class Detect(nn.Module):
     """YOLOv8 Detect head for detection models."""
     dynamic = False  # force grid reconstruction
     export = False  # export mode
+    export_raw_separate = False  # six outputs: reg3, cls3, reg4, cls4, reg5, cls5
+    export_raw = False  # deployment-only raw logits; normal training/inference unchanged
     shape = None
     anchors = torch.empty(0)  # init
     strides = torch.empty(0)  # init
@@ -41,9 +43,13 @@ class Detect(nn.Module):
 
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes and class probabilities."""
+        if self.export_raw_separate:
+            return tuple(t for i in range(self.nl) for t in (self.cv2[i](x[i]), self.cv3[i](x[i])))
         shape = x[0].shape  # BCHW
         for i in range(self.nl):
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+        if self.export_raw:
+            return tuple(x)
         if self.training:
             return x
         elif self.dynamic or self.shape != shape:
