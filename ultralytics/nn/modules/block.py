@@ -10,7 +10,7 @@ import math
 
 from .conv import Conv
 
-__all__ = ['DFL', 'SPPF', 'C2f', 'Bottleneck', 'ScaleAwareProgressivePConv', 'ProgressiveFasterBlock', 'C2f_ScaleAwarePConv', 'BPUScaleBlock', 'C2f_BPUScaleBlock']
+__all__ = ['DFL', 'SPPF', 'C2f', 'Bottleneck', 'ScaleAwareProgressivePConv', 'ProgressiveFasterBlock', 'C2f_ScaleAwarePConv']
 
 
 class DFL(nn.Module):
@@ -117,38 +117,6 @@ class Bottleneck(nn.Module):
 
 
 
-
-class BPUScaleBlock(nn.Module):
-    """BPU-oriented pointwise-depthwise-pointwise compression bottleneck."""
-    def __init__(self, c1, c2, alpha=0.25, shortcut=True, align=8):
-        super().__init__()
-        if not 0 < alpha <= 1:
-            raise ValueError("alpha must be in (0, 1]")
-        if int(align) < 1:
-            raise ValueError("align must be positive")
-        hidden = max(int(align), math.ceil(c2 * alpha / int(align)) * int(align))
-        self.c1, self.c2, self.alpha, self.align, self.hidden = c1, c2, alpha, int(align), hidden
-        self.cv1 = Conv(c1, hidden, 1, 1)
-        self.dw = Conv(hidden, hidden, 3, 1, g=hidden)
-        self.cv2 = Conv(hidden, c2, 1, 1, act=False)
-        self.use_residual = bool(shortcut and c1 == c2)
-
-    def forward(self, x):
-        y = self.cv2(self.dw(self.cv1(x)))
-        return x + y if self.use_residual else y
-
-
-class C2f_BPUScaleBlock(C2f):
-    """C2f whose internal bottlenecks use BPUScaleBlock."""
-    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5, alpha=0.25, align=8):
-        if g != 1:
-            raise ValueError('g must be 1 for this experiment')
-        super().__init__(c1, c2, n, shortcut, g, e)
-        self.alpha, self.align = alpha, int(align)
-        self.m = nn.ModuleList(BPUScaleBlock(self.c, self.c, alpha, shortcut, align) for _ in range(n))
-
-    def forward(self, x):
-        return self.forward_split(x)
 
 class ScaleAwareProgressivePConv(nn.Module):
     def __init__(self, dim, scale_type='medium'):
